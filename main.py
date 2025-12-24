@@ -78,20 +78,35 @@ async def report_user(
     """
     Report a user to be added to the blocklist.
     Requires x-api-key header for authentication.
-    Uses upsert to avoid duplicates.
+    If user already exists, increment block_count by 1.
+    New users start with block_count = 1.
     """
     # Validate API key
     if not x_api_key or x_api_key != API_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden: Invalid API key")
     
     try:
-        # Upsert: insert or update if exists (based on user_id)
-        supabase.table("blocklist").upsert(
-            {"user_id": request.user_id, "reason": request.reason},
-            on_conflict="user_id"
-        ).execute()
+        # Check if user already exists
+        existing = supabase.table("blocklist").select("block_count").eq("user_id", request.user_id).execute()
         
-        return MessageResponse(message=f"User {request.user_id} reported successfully")
+        if existing.data and len(existing.data) > 0:
+            # User exists: increment block_count
+            current_count = existing.data[0].get("block_count", 1) or 1
+            supabase.table("blocklist").update({
+                "block_count": current_count + 1,
+                "reason": request.reason  # update reason to latest
+            }).eq("user_id", request.user_id).execute()
+            
+            return MessageResponse(message=f"User {request.user_id} reported again (count: {current_count + 1})")
+        else:
+            # New user: insert with block_count = 1
+            supabase.table("blocklist").insert({
+                "user_id": request.user_id,
+                "reason": request.reason,
+                "block_count": 1
+            }).execute()
+            
+            return MessageResponse(message=f"User {request.user_id} reported successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
